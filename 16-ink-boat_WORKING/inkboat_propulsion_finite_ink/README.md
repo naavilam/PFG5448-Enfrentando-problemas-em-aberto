@@ -134,3 +134,21 @@ sem arrasto, estabilidade em tempos pequenos e conversões geométricas.
 Testes adicionais verificam conservação de volume, tempo de esgotamento, contraste em
 degrau, continuidade de velocidade/posição, salto da aceleração e relaxação após esgotamento e concordância com uma integração
 RK4 independente.
+
+## Streamlit Community Cloud
+
+A pasta atual é `16-ink-boat_WORKING/inkboat_propulsion_finite_ink`
+(renomeada a partir de `inkboat_new_implementation`). O arquivo principal no
+deploy deve ser `16-ink-boat_WORKING/inkboat_propulsion_finite_ink/app.py`.
+
+O `requirements.txt` fixa as versões testadas localmente: Streamlit 1.57.0,
+NumPy 2.4.6, Matplotlib 3.10.9 e PyArrow 24.0.0. O log da nuvem instalava
+Streamlit 1.66.1 com requisitos abertos e depois corrigia automaticamente uma
+falha conhecida do PyArrow 26. Fixar versões elimina essa diferença de ambiente;
+não é uma confirmação da causa dos erros HTTP 500 nos arquivos JavaScript.
+
+Após enviar o requirements atualizado ao GitHub, a nuvem deve reconstruir o
+ambiente. Se necessário, use Manage app → Reboot app e confirme no novo log
+`streamlit==1.57.0`. Recarregue o navegador sem cache ou teste em janela privada.
+Se persistir, verifique os logs gerados após acessar a página; o log de instalação
+sozinho não contém traceback do código Python.
