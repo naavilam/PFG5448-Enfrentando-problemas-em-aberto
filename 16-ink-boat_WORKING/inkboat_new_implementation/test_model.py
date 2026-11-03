@@ -10,7 +10,7 @@ class ForceBalanceTests(unittest.TestCase):
         for perimeter in (0.002, 0.02, 0.1):
             for gamma in (0.0, 0.030, 0.100):
                 for count in (16, 256, 1024):
-                    p = Params(perimeter_m=perimeter, gamma_n_m=gamma, contour_points=count)
+                    p = Params(perimeter_m=perimeter, gamma_n_m=gamma, gamma_contrast_n_m=0, contour_points=count)
                     np.testing.assert_allclose(capillary_force(p), [0, 0], atol=1e-18)
 
     def test_known_first_harmonic_has_correct_vector_force(self):
@@ -25,12 +25,12 @@ class ForceBalanceTests(unittest.TestCase):
         np.testing.assert_allclose(capillary_force(p, gamma), [0, expected], rtol=1e-12, atol=1e-18)
 
     def test_rest_remains_at_rest_without_external_force(self):
-        r = simulate(Params(duration_s=60))
+        r = simulate(Params(duration_s=60, gamma_contrast_n_m=0))
         for key in ('velocity_m_s', 'acceleration_m_s2', 'position_m', 'total_force_n'):
             np.testing.assert_array_equal(r[key], 0)
 
     def test_loaded_solution_initial_condition_terminal_speed_and_force_balance(self):
-        p = Params(external_force_n=1e-8, duration_s=60)
+        p = Params(external_force_n=1e-8, duration_s=60, gamma_contrast_n_m=0)
         r = simulate(p)
         self.assertEqual(r['velocity_m_s'][0], 0)
         self.assertEqual(r['position_m'][0], 0)
@@ -60,6 +60,22 @@ class ForceBalanceTests(unittest.TestCase):
         self.assertAlmostEqual(p.wetted_area_m2, np.pi*0.003**2)
         self.assertAlmostEqual(p.drag_kg_s, WATER_VISCOSITY_PA_S*np.pi*0.003**2/0.001)
         self.assertAlmostEqual(replace(p, perimeter_m=2*p.perimeter_m).drag_kg_s, 4*p.drag_kg_s)
+
+    def test_prescribed_contrast_produces_correct_force_and_motion(self):
+        for contrast in (1e-5, -1e-5, 0.0):
+            p = Params(gamma_contrast_n_m=contrast)
+            expected = p.perimeter_m*contrast/4
+            np.testing.assert_allclose(capillary_force(p), [expected, 0], atol=1e-18)
+            r = simulate(p)
+            self.assertAlmostEqual(r['acceleration_m_s2'][0], expected/p.mass_kg)
+            np.testing.assert_allclose(p.mass_kg*r['acceleration_m_s2'], r['total_force_n'], atol=1e-21)
+            if contrast:
+                self.assertGreater(r['velocity_m_s'][-1]*contrast, 0)
+        a = capillary_force(Params(gamma_n_m=0.03))
+        b = capillary_force(Params(gamma_n_m=0.09))
+        np.testing.assert_allclose(a, b, atol=1e-18)
+        with self.assertRaises(ValueError):
+            Params(gamma_n_m=0.01, gamma_contrast_n_m=0.03)
 
     def test_invalid_parameters_fail(self):
         for kwargs in ({'mass_kg':0}, {'perimeter_m':-1}, {'gamma_n_m':float('nan')},

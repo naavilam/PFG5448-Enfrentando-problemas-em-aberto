@@ -1,4 +1,4 @@
-"""Equation 3.5 with uniform gamma and an explicit thin-disk shear closure.
+"""Equation 3.5 with a time-independent surface-tension contrast and an explicit thin-disk shear closure.
 
 SI units internally. This is a reduced force balance, not a fluid-field solver.
 See README.md for assumptions, the derivation, and sources.
@@ -20,6 +20,7 @@ class Params:
     mass_kg: float = 0.2e-3
     perimeter_m: float = 20e-3
     gamma_n_m: float = 72e-3  # prescribed constant, NOT an inferred water property
+    gamma_contrast_n_m: float = 0.01e-3  # front minus rear; prescribed, constant in time
     shear_depth_m: float = 0.5e-3
     duration_s: float = 5.0
     points: int = 501
@@ -33,6 +34,9 @@ class Params:
                 raise ValueError(f"{name} must be finite and positive")
         if not np.isfinite(self.gamma_n_m) or self.gamma_n_m < 0:
             raise ValueError("gamma_n_m must be finite and nonnegative")
+        if (not np.isfinite(self.gamma_contrast_n_m)
+                or abs(self.gamma_contrast_n_m) > 2*self.gamma_n_m):
+            raise ValueError("Contrast must satisfy abs(delta_gamma) <= 2*gamma0")
         if not np.isfinite(self.external_force_n):
             raise ValueError("external_force_n must be finite")
         for name, minimum in (("points", 2), ("contour_points", 16)):
@@ -72,9 +76,10 @@ def contact_line(p):
 def gamma_on_contour(theta, time_s, p):
     """Single constitutive hook for a later gamma(theta, t) model.
 
-    Current model: one constant in space AND time. No ink transport is assumed.
+    Current model: gamma0 + delta_gamma/2*cos(theta), constant in time.
+    Front is +x; lower rear tension mimics the effect of ink without transport.
     """
-    return np.full_like(theta, p.gamma_n_m, dtype=float)
+    return p.gamma_n_m + 0.5*p.gamma_contrast_n_m*np.cos(theta)
 
 
 def capillary_force(p, gamma_values=None):
@@ -82,8 +87,8 @@ def capillary_force(p, gamma_values=None):
 
     Removing a constant baseline is exact for a closed planar circle because
     integral t dl = 0. It prevents roundoff from manufacturing propulsion.
-    Nonuniform arrays can be supplied for mathematical validation only;
-    the application currently always calls gamma_on_contour (uniform).
+    The prescribed cosine profile gives Fx=P*delta_gamma/4, Fy=0.
+    Optional arrays allow independent mathematical validation of the integral.
     """
     theta, _, conormal = contact_line(p)
     gamma = gamma_on_contour(theta, 0.0, p) if gamma_values is None else np.asarray(gamma_values, dtype=float)
@@ -121,7 +126,7 @@ def constant_force_response(time_s, mass_kg, drag_kg_s, force_n):
 
 
 def simulate(p):
-    """Evaluate the constant-gamma reduced model over the entire time window.
+    """Evaluate the time-independent-contrast reduced model over the entire time window.
 
     Changing controls recomputes this window from U(0)=0, without blending
     trajectories from different parameter sets. No numerical time-step error.
