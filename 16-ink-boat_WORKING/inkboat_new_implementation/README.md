@@ -25,7 +25,7 @@ A execução para ao atingir a janela de tempo; Iniciar novamente começa outro
 ensaio. Alterar parâmetros físicos reinicia o ensaio para não misturar modelos.
 Os gráficos e indicadores avançam com o tempo simulado, avaliando a solução
 analítica até o instante atual. O download exporta somente o trecho já exibido.
-O contraste Δγ gera a força propulsiva; com Δγ=0 e sem força externa, o relógio avança mas o barco permanece parado.
+O contraste Δγ(t) gera a força propulsiva; com Δγ=0, o relógio avança mas o barco permanece parado.
 
 ## Equações da tese
 
@@ -48,8 +48,8 @@ direções ao longo do contorno. Para um contorno fechado plano e γ uniforme,
 - P ajustável, R=P/(2π), área inferior molhada A=πR²; borda molhada desprezada.
 - Água pura a 20 °C, aproximadamente 0,1 MPa; constantes μ=1,0016×10⁻³ Pa·s
   e ρ≈998,2 kg/m³. γ₀ é ajustável e prescrito, não uma constante inferida.
-- Barco e água inicialmente em repouso. γ varia no espaço e permanece constante no tempo: γ(θ)=γ₀+(Δγ/2)cosθ.
-- Δγ=γfrente−γtrás; frente é +x, traseira é −x. O contraste satisfaz |Δγ|≤2γ₀ para manter γ≥0. É uma entrada prescrita para representar o efeito da tinta, não um resultado de transporte.
+- Barco e água inicialmente em repouso. γ varia no espaço e no tempo: γ(θ,t)=γ₀+[Δγ(t)/2]cosθ.
+- Δγ=γfrente−γtrás; frente é +x, traseira é −x. O contraste satisfaz |Δγ|≤2γ₀ para manter γ≥0. O contraste inicial Δγ₀ é prescrito; sua redução é proporcional ao volume restante, sem resolver o transporte.
 - Aproximação de cisalhamento: uₓ(z,t)≈U(t)(1+z/h), para −h≤z≤0, com água em
   repouso em z=−h e não deslizamento na face inferior z=0.
 - h é uma escala de cisalhamento efetiva ajustável, não a profundidade física
@@ -76,26 +76,42 @@ seção 3, Eq. (7). A correlação de viscosidade é
 A 293,15 K, fornece aproximadamente 1,0016 mPa·s. Fixamos esse valor para esta
 primeira etapa; a temperatura não é um controle variável.
 
-## Contraste espacial e curvas esperadas
+## Gota finita e contraste decrescente
 
-O perfil prescrito é γ(θ)=γ₀+(Δγ/2)cosθ, constante **no tempo**. A integral
-no disco dá **Fγ,x=PΔγ/4**, Fγ,y=0. Δγ positivo reduz a tensão na traseira e
-produz movimento para +x. O termo uniforme γ₀ cancela; Δγ=0 recupera o caso
-sem propulsão. O padrão Δγ=0,01 mN/m é ilustrativo, não um valor medido.
+Dois controles definem a duração da propulsão: volume inicial V₀ (µL) e taxa
+constante de ejeção Q (µL/s). Internamente são convertidos para m³ e m³/s
+(1 µL = 10⁻⁹ m³).
 
-Com F=Fγ+Fext e b=μA/h:
+- V(t)=max(V₀−Qt,0).
+- t_fim=V₀/Q, para Q>0.
+- Δγ(t)=Δγ₀ V(t)/V₀, para V₀>0.
+- γ(θ,t)=γ₀+[Δγ(t)/2]cosθ.
+- Fγ,x(t)=PΔγ(t)/4 e Fγ,y=0.
 
-- m dU/dt = F − bU;
-- τ=m/b, U∞=F/b;
-- U(t)=U∞(1−exp(−t/τ));
-- a(t)=(F/m)exp(−t/τ).
+O contraste começa no valor inicial e decresce linearmente até zero. Maior Q
+esgota a tinta mais cedo; maior V₀ prolonga a propulsão. O valor médio γ₀ não vai
+a zero. Q=0 mantém a tinta e o contraste inicial; V₀=0 implica contraste e força
+nulos desde t=0. Esses são limites explícitos desta lei fenomenológica.
 
-A velocidade cresce a partir de zero e tende a um valor terminal; a aceleração
-começa em F/m e decai. Sem arrasto, uma força constante daria velocidade linear
-e aceleração constante. Um contraste negativo inverte o sentido do movimento.
+A hipótese de proporcionalidade ao volume restante é uma escolha deste modelo,
+não uma lei derivada de transporte, difusão ou adsorção. A tinta já liberada não
+mantém contraste após o reservatório esvaziar nesta aproximação. Δγ₀=0,01 mN/m,
+V₀=0,02 µL e Q=0,005 µL/s são valores ilustrativos: t_fim=4 s.
 
-O ensaio opcional de força externa é independente do contraste e fica desativado
-por padrão. O movimento padrão vem da integral de tensão superficial.
+O movimento obedece m dU/dt=Fγ(t)−bU, b=μA/h e U(0)=0. A resposta é calculada
+analiticamente por trechos, sem erro de integração temporal: força em rampa
+até t_fim e apenas relaxação viscosa depois. O gráfico inclui exatamente o instante
+de esgotamento, mesmo se ele cair entre os pontos da malha de visualização.
+
+Após o esgotamento, U(t)=U(t_fim) exp[−(t−t_fim)/τ], com τ=m/b. O barco não para
+instantaneamente: ele conserva velocidade e desacelera por arrasto. A velocidade
+e a aceleração não precisam diminuir juntas desde o início; U parte de zero,
+cresce e depois cai, enquanto a aceleração pode mudar de sinal antes de t_fim.
+Contraste negativo inverte o sentido da trajetória.
+
+A interface mostra volume restante/ejetado, contraste atual, forças, velocidade
+e aceleração. A linha vertical pontilhada marca t_fim. O CSV inclui volume,
+contraste e demais grandezas em unidades SI. Não há força externa.
 
 ## O que falta para modelar a experiência
 
@@ -103,12 +119,12 @@ Forma e dimensões reais, massa, imersão/área molhada, temperatura, paredes e 
 do recipiente, condições iniciais do fluido e uma lei γ(s,t). Para usar diretamente
 a Eq. (3.3), é necessário resolver os campos p e u com condições de contorno.
 
-A função `gamma_on_contour(theta, time_s, p)` concentra o perfil atual.
-Uma futura lei de concentração poderá determinar γ(θ,t) e Δγ(t); a solução
-analítica atual só vale para força constante. Um gradiente de tensão real também
-gera escoamento de Marangoni na água. Esse escoamento não é calculado pelo arrasto
-−bU e exigirá rever o fechamento hidrodinâmico. Assim, esta etapa representa a
-força capilar direta com contraste prescrito, não a solução completa da tese.
+A função `gamma_on_contour(theta, time_s, p)` usa o contraste calculado pela
+fração de tinta restante. Uma futura lei de concentração poderá substituir essa
+relação empírica. Um gradiente de tensão real também gera escoamento de Marangoni
+na água; esse escoamento não é calculado pelo arrasto −bU e exigirá rever o
+fechamento hidrodinâmico. Esta etapa calcula a força capilar direta com contraste
+prescrito pelo volume, não a solução completa da tese.
 
 ## Verificação
 
@@ -119,3 +135,7 @@ python3 -m unittest -v test_model.py
 Os testes cobrem cancelamento para γ uniforme, integral com harmônico conhecido,
 repouso sem força, balanço de forças/velocidade terminal, força negativa, limite
 sem arrasto, estabilidade em tempos pequenos e conversões geométricas.
+
+Testes adicionais verificam conservação de volume, tempo de esgotamento, contraste
+linear, continuidade, relaxação após esgotamento e concordância com uma integração
+RK4 independente.
