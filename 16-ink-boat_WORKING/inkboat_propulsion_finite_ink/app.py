@@ -1,168 +1,267 @@
-import streamlit as st
-import numpy as np
-import matplotlib.pyplot as plt
-from model import Params,LiveSimulation
+"""Run with: python -m streamlit run app.py"""
+import csv
+import io
+import time
+from dataclasses import astuple, replace
+from playback import Playback
 
-st.set_page_config(page_title='Ink Boat | Marangoni Propulsion',layout='wide')
-st.markdown('<style>[data-testid="stSidebar"]{min-width:610px!important;width:610px!important;}@media(max-width:900px){[data-testid="stSidebar"]{min-width:350px!important;width:350px!important;}}</style>',unsafe_allow_html=True)
-st.title('Ink Boat — Marangoni Propulsion')
-st.markdown('**Propulsão do barco gerada por diferenças espaciais de tensão superficial**')
-st.caption('Modelo: transporte superficial acoplado à resposta hidrodinâmica de Stokes.')
-st.info('**O que é previsto:** força capilar e movimento translacional decorrentes da distribuição de tensão superficial calculada. **Limites:** Stokes (Re ≪ 1), superfície plana, fonte efetiva de tinta e arrasto aproximado; não resolve as três interfaces móveis nem as tensões sobre a superfície molhada.')
+import matplotlib.pyplot as plt
+import numpy as np
+import streamlit as st
+
+from model import (
+    Params, WATER_DENSITY_KG_M3, WATER_PRESSURE_PA, WATER_SOURCE,
+    WATER_TEMPERATURE_C, WATER_VISCOSITY_PA_S, contact_line, gamma_on_contour, simulate,
+)
+
+st.set_page_config(page_title="Ink Boat | Balanço de forças", layout="wide")
+st.markdown(
+    "<style>[data-testid=stSidebar]{min-width:610px!important;width:610px!important;}"
+    "@media(max-width:900px){[data-testid=stSidebar]{min-width:350px!important;width:350px!important;}}"
+    "</style>", unsafe_allow_html=True,
+)
+st.title("Ink Boat — Balanço de forças")
+st.markdown("**Equação 3.5 · contraste de tensão superficial e resposta viscosa de um disco fino**")
+st.caption("Equações, constantes e controles à esquerda; velocidade, aceleração e forças à direita.")
 
 with st.sidebar:
-    st.header('Modelo físico | Parâmetros')
+    st.header("Simulação")
+    c1, c2, c3 = st.columns(3)
+    start = c1.button("▶ Iniciar / Retomar", width="stretch")
+    pause = c2.button("⏸ Pausar", width="stretch")
+    stop = c3.button("⏹ Parar / Reiniciar", width="stretch")
+    playback_rate = st.select_slider("Velocidade de reprodução", options=[0.1, 0.25, 0.5, 1.0, 2.0, 5.0], value=1.0,
+                                     format_func=lambda value: f"{value:g}×")
+    st.caption("Pausar mantém o instante atual. Parar retorna a t=0. Alterar parâmetros físicos reinicia o ensaio.")
+    st.header("Equações e parâmetros")
     with st.container(border=True):
-        st.markdown('**1 · Interfaces e contraste de tensão**')
-        eq,ctrl=st.columns(2)
-        with eq:
-            st.latex(r'S=\gamma_{wa}-\gamma_{ia}-\gamma_{iw}')
-            st.caption('S é diagnóstico: não fornece o gradiente de tensão.')
-        with ctrl:
-            wa=st.slider('γ água–ar (mN/m)',20.,80.,72.)
-            ia=st.slider('γ tinta–ar (mN/m)',1.,70.,30.)
-            iw=st.slider('γ tinta–água (mN/m)',1.,70.,25.)
-        st.caption(f'S = {wa-ia-iw:+.2f} mN/m')
-    with st.container(border=True):
-        st.markdown('**2 · Como a tinta cria o gradiente de tensão**')
-        eq,ctrl=st.columns(2)
-        with eq:
-            st.latex(r'\gamma=\gamma_{wa}-\beta\Gamma')
-            st.latex(r'\partial_t\Gamma+\nabla_s\cdot(\Gamma\mathbf u_s)=D_s\nabla_s^2\Gamma+J-\Gamma/\tau')
-            st.caption('Γ em kg/m²; J em kg/(m² s). β é uma hipótese constitutiva.')
-        with ctrl:
-            beta=st.slider('β (N m/kg)',10.,3000.,1000.,10.)
-            ds=st.select_slider('Dₛ (m²/s)',options=[1e-10,1e-9,1e-8,1e-7,1e-6],value=1e-8,format_func=lambda x:f'{x:.0e}')
-            st.caption("A fonte J depende do reservatório finito (bloco 3).")
-            tau=st.slider('Tempo de remoção τ (s)',0.5,30.,8.,0.5)
-            width=st.slider('Largura da fonte (mm)',0.5,5.,1.2,0.1)
-            angle=st.slider('Direção da fonte (°)',0,359,180)
-    with st.container(border=True):
-        st.markdown('**3 · Reservatório finito de tinta**')
-        eq,ctrl=st.columns(2)
-        with eq:
-            st.latex(r'V(0)=V_0,\quad \dot V=-Q')
-            st.latex(r'J=\eta\rho_i Q\,q(x,y)')
-            st.latex(r't_{\rm empty}=V_0/Q')
-            st.caption('q normalizada; η é a fração efetiva que contribui para Γ. O reservatório não pode ficar negativo.')
-        with ctrl:
-            volume=st.slider('Volume inicial V₀ (µL; reiniciar)',0.001,1.0,0.02,0.001,format='%.3f')
-            release=st.slider('Taxa de liberação Q (µL/s)',0.0,0.05,0.001,0.0005,format='%.4f')
-            ink_density=st.slider('Densidade da tinta (kg/m³)',700.,1500.,1000.,10.)
-            active_fraction=st.select_slider('Fração superficial efetiva η',options=[1e-5,1e-4,1e-3,1e-2,0.1,1.0],value=1e-3,format_func=lambda x:f'{x:.0e}')
-            if release>0:st.caption(f'Esgotamento ideal: {volume/release:.1f} s')
-            else:st.caption('Liberação desativada.')
-    with st.container(border=True):
-        st.markdown('**4 · Escoamento induzido por Marangoni**')
-        eq,ctrl=st.columns(2)
-        with eq:
-            st.latex(r'0=-\nabla p+\mu\nabla^2\mathbf u')
-            st.latex(r'\nabla\cdot\mathbf u=0')
-            st.latex(r'\widehat{\mathbf u}_s=\frac{(I-\hat k\hat k/2)\widehat{\nabla_s\gamma}}{\mu|k|}')
-            st.caption('Solução espectral para água profunda, interface plana e domínio periódico.')
-        with ctrl:
-            mu=st.slider('μ água (mPa·s)',0.5,10.,1.,0.1)
-            rho=st.slider('ρ água (kg/m³)',900.,1100.,998.)
-            n=st.select_slider('Malha (reiniciar)',options=[48,64,96,128],value=96)
-            domain=st.slider('Domínio (mm; reiniciar)',30.,100.,50.,5.)
-    with st.container(border=True):
-        st.markdown('**5 · Força propulsiva e velocidade**')
-        eq,ctrl=st.columns(2)
-        with eq:
-            st.latex(r'\mathbf F=R\int_0^{2\pi}\gamma\mathbf e_r\,d\theta')
-            st.latex(r'm\dot{\mathbf U}=\mathbf F-b\mathbf U')
-            st.latex(r'b\approx 6\pi\mu R\,c_d')
-            st.caption('b é aproximação de arrasto esférico, NÃO integração de tensões no barco.')
-        with ctrl:
-            radius=st.slider('Raio R (mm; reiniciar)',1.,8.,3.,0.5)
-            mass=st.slider('Massa (g)',0.02,3.,0.2,0.02)
-            drag=st.slider('Fator de arrasto c_d',0.3,15.,1.,0.1)
-    dt=st.slider('Tempo simulado por atualização (s)',0.002,0.05,0.015,0.001)
-    x,y,z=st.columns(3)
-    start=x.button('▶ Iniciar',use_container_width=True)
-    pause=y.button('⏸ Pausar',use_container_width=True)
-    reset=z.button('↺ Reiniciar',use_container_width=True)
+        st.markdown("**1 · Balanço de quantidade de movimento — Eq. 3.5**")
+        st.latex(r"\oint_{\ell_p}\gamma\,\mathbf t\,d\ell+\int_{S_p}\mathbf n\cdot\boldsymbol\sigma\,dS=m\frac{d\mathbf U}{dt}")
+        st.latex(r"\mathbf U(0)=\mathbf0")
+        st.caption("Translação horizontal em x. A força de peso e o empuxo não entram nessa componente; a imersão é prescrita.")
+        mass_g = st.slider("Massa do barco m (g)", 0.02, 5.0, 0.20, 0.02)
+        st.latex(r"m=" + f"{mass_g*1e-3:.3g}" + r"\;\mathrm{kg}")
 
-p=Params(n=n,domain_mm=domain,radius_mm=radius,mass_g=mass,mu_mpas=mu,rho=rho,
-         gamma_wa_mnm=wa,gamma_ia_mnm=ia,gamma_iw_mnm=iw,
-         beta_n_m_per_kg_m2=beta,ds=ds,ink_volume_ul=volume,release_ul_s=release,
-         ink_density_kg_m3=ink_density,active_fraction=active_fraction,plume_width_mm=width,
-         decay_s=tau,drag_factor=drag,source_angle_deg=angle)
-if 'ink_coupled' not in st.session_state or reset:
-    st.session_state.ink_coupled=LiveSimulation(p)
-    st.session_state.ink_running=False
-if start:st.session_state.ink_running=True
-if pause:st.session_state.ink_running=False
-s=st.session_state.ink_coupled
-if (s.p.n,s.p.domain_mm,s.p.radius_mm,s.p.ink_volume_ul)!=(n,domain,radius,volume):
-    st.info('Malha, domínio, raio ou volume inicial alterados: clique em Reiniciar para aplicar.')
-for field in ('mass_g','mu_mpas','rho','gamma_wa_mnm','gamma_ia_mnm','gamma_iw_mnm',
-              'beta_n_m_per_kg_m2','ds','release_ul_s','ink_density_kg_m3','active_fraction','plume_width_mm','decay_s','drag_factor','source_angle_deg'):
-    setattr(s.p,field,getattr(p,field))
+    with st.container(border=True):
+        st.markdown("**2 · Contorno do barco e tensão superficial**")
+        st.latex(r"P=\oint_{\ell_p}d\ell=2\pi R,\qquad A_w=\pi R^2")
+        perimeter_mm = st.slider("Perímetro total P (mm)", 2.0, 100.0, 20.0, 1.0)
+        gamma_mnm = st.slider("Tensão superficial média γ₀ (mN/m)", 0.0, 100.0, 72.0, 0.5)
+        contrast_limit = max(2*gamma_mnm, 0.001)
+        contrast_mnm = st.number_input("Contraste inicial Δγ₀ (mN/m)",
+                                       min_value=-contrast_limit, max_value=contrast_limit,
+                                       value=min(0.01, 2*gamma_mnm), step=0.001,
+                                       format="%.4f", disabled=gamma_mnm == 0)
+        if gamma_mnm == 0:
+            contrast_mnm = 0.0
+        st.latex(r"\gamma(\theta,t)=\gamma_0+\frac{\Delta\gamma(t)}{2}\cos\theta")
+        st.latex(r"\gamma_{\rm frente}=\gamma_0+\frac{\Delta\gamma(t)}{2},\quad\gamma_{\rm tr\acute as}=\gamma_0-\frac{\Delta\gamma(t)}{2}")
+        st.caption(f"Frente inicial (+x): {gamma_mnm+contrast_mnm/2:.4f} mN/m · Traseira inicial (−x): {gamma_mnm-contrast_mnm/2:.4f} mN/m")
+        st.latex(r"F_{\gamma,x}=R\int_0^{2\pi}\gamma(\theta,t)\cos\theta\,d\theta=\frac{P\Delta\gamma(t)}{4}")
+        st.caption("ℓₚ é a linha de contato; P é seu comprimento. Na tese, t é tangente à interface água–ar e normal ao contorno. Para o disco, aponta radialmente para fora.")
+        st.caption("Δγ₀ > 0 representa menor tensão atrás e força para +x. A média γ₀ fica fixa; o contraste se mantém enquanto houver tinta e zera no esgotamento.")
 
-@st.fragment(run_every='0.4s')
+    with st.container(border=True):
+        st.markdown("**3 · Gota de tinta e contraste no tempo**")
+        volume_ul = st.number_input("Volume inicial da gota V₀ (µL)", min_value=0.0, max_value=1000.0,
+                                    value=0.02, step=0.005, format="%.4f")
+        rate_ul_s = st.number_input("Taxa de ejeção Q (µL/s)", min_value=0.0, max_value=100.0,
+                                    value=0.005, step=0.001, format="%.4f")
+        st.latex(r"V(t)=\max(V_0-Qt,0),\quad t_{\rm fim}=V_0/Q")
+        st.latex(r"\Delta\gamma(t)=\begin{cases}\Delta\gamma_0,&V(t)>0\\0,&V(t)=0\end{cases}")
+        if volume_ul == 0:
+            st.caption("Sem tinta: contraste e força propulsiva nulos desde t=0.")
+        elif rate_ul_s == 0:
+            st.caption("Q=0: sem consumo; o contraste inicial permanece constante.")
+        else:
+            st.caption(f"Tinta esgotada em {volume_ul/rate_ul_s:.3g} s. Depois disso, a força capilar é zero e o barco desacelera pelo arrasto.")
+        st.caption("Hipótese: contraste constante enquanto há tinta e corte abrupto no esgotamento. O volume diminui continuamente; Δγ cai em degrau. γ₀ não vai a zero.")
+
+    with st.container(border=True):
+        st.markdown("**4 · Tensor de tensões — Eq. 3.3**")
+        st.latex(r"\boldsymbol\sigma=-p\mathbf I+\mu\left[\nabla\mathbf u+(\nabla\mathbf u)^T\right]")
+        st.latex(r"\mu=" + f"{WATER_VISCOSITY_PA_S:.7f}" + r"\;\mathrm{Pa\,s}")
+        st.markdown(f"**Constante:** μ = {WATER_VISCOSITY_PA_S*1e3:.4f} mPa·s, água pura a {WATER_TEMPERATURE_C:.0f} °C e ≈ {WATER_PRESSURE_PA/1e6:.1f} MPa.")
+        st.caption("ρ ≈ 998,2 kg/m³ é usada apenas no diagnóstico de Reynolds. As propriedades da água permanecem fixas nesta versão.")
+        st.markdown(f"[Fonte: IAPWS SR6-08(2011), seção 3, Eq. (7)]({WATER_SOURCE})")
+        st.markdown("**Fechamento adotado: cisalhamento sob a face inferior**")
+        st.latex(r"u_x(z,t)\simeq U(t)\left(1+\frac zh\right),\quad-h\le z\le0")
+        st.latex(r"F_{h,x}\simeq-\mu\frac{A_w}{h}U=-bU,\qquad b=\frac{\mu A_w}{h}")
+        shear_depth_mm = st.slider("Espessura efetiva de cisalhamento h (mm)", 0.05, 5.0, 0.50, 0.05)
+        st.caption("Água em repouso em z=−h; não deslizamento na face z=0. Pressão sem gradiente horizontal, sem contribuição horizontal líquida. Área lateral do disco desprezada.")
+        st.caption("h é uma escala efetiva do fechamento, não uma profundidade medida. Não estamos calculando os campos p(x,y,z,t) e u(x,y,z,t) da tese.")
+
+    with st.container(border=True):
+        st.markdown("**5 · Velocidade e aceleração no tempo**")
+        st.latex(r"m\dot U=F_\gamma-bU,\qquad U(0)=0")
+        st.latex(r"\tau=\frac mb,\qquad a(t)=\frac{F_\gamma(t)-bU(t)}m")
+        st.latex(r"t>t_{\rm fim}:\quad U(t)=U(t_{\rm fim})e^{-(t-t_{\rm fim})/\tau}")
+        duration_s = st.slider("Janela de tempo (s)", 0.1, 60.0, 5.0, 0.1)
+        points = st.select_slider("Pontos nas curvas", options=[101, 251, 501, 1001, 2001], value=501)
+        st.caption("Solução analítica por trechos: força constante durante o consumo e relaxação viscosa após o esgotamento. A aceleração salta no corte; a velocidade é contínua.")
+
+p = Params(mass_kg=mass_g*1e-3, perimeter_m=perimeter_mm*1e-3,
+           gamma_n_m=gamma_mnm*1e-3, gamma_contrast_n_m=contrast_mnm*1e-3, shear_depth_m=shear_depth_mm*1e-3,
+           duration_s=duration_s, points=points,
+           ink_volume_m3=volume_ul*1e-9, ejection_rate_m3_s=rate_ul_s*1e-9)
+signature = astuple(p)
+now = time.monotonic()
+if st.session_state.get("inkboat_parameters") != signature:
+    st.session_state.inkboat_clock = Playback(last_tick=now)
+    st.session_state.inkboat_parameters = signature
+clock = st.session_state.inkboat_clock
+clock.advance(now, p.duration_s, playback_rate)
+if stop:
+    clock.stop(now)
+elif pause:
+    clock.pause()
+elif start:
+    clock.start(now, p.duration_s)
+
+
+if p.gamma_contrast_n_m == 0 or p.ink_volume_m3 == 0:
+    st.info("Contraste zero: γ uniforme ⇒ força capilar nula. Partindo do repouso, U(t)=0 e a(t)=0.")
+else:
+    st.info("Fγ(t) = P Δγ(t) / 4. O contraste permanece constante enquanto há tinta; "
+            "quando a tinta acaba, a propulsão cessa e a velocidade decai por arrasto.")
+
+# Compare the forcing duration with the mechanical relaxation time.
+time_95_s = -np.log(0.05)*p.relaxation_time_s
+if p.gamma_contrast_n_m != 0 and p.ink_volume_m3 > 0:
+    st.caption(f"Tempo para atingir 95% da velocidade de equilíbrio: {time_95_s:.2f} s "
+               f"(τ=m/b={p.relaxation_time_s:.2f} s). "
+               + (f"Esgotamento da tinta: {p.empty_time_s:.2f} s." if np.isfinite(p.empty_time_s) else "Sem esgotamento: Q=0."))
+    if p.empty_time_s < time_95_s:
+        st.info("A tinta acaba antes de o barco atingir 95% da velocidade de equilíbrio; por isso não aparece um patamar. "
+                "Para prolongar a fase de velocidade quase constante, aumente V₀ ou diminua Q. "
+                "Δγ e a força já permanecem constantes até V₀/Q.")
+
+@st.fragment(run_every=0.25)
 def live():
-    s=st.session_state.ink_coupled
-    if st.session_state.ink_running:
-        s.step(dt)
-    re,pe=s.diagnostics()
-    # A interpretação principal é a força e o movimento do barco.
-    speed=np.linalg.norm(s.vel)
-    force=np.linalg.norm(s.force)
-    a,b,c,d=st.columns(4)
-    a.metric('Velocidade do barco',f'{speed*1e3:.3f} mm/s')
-    b.metric('Força propulsiva',f'{force*1e6:.3f} µN')
-    c.metric('Deslocamento',f'{np.linalg.norm(s.pos)*1e3:.3f} mm')
-    d.metric('Tinta restante',f'{s.ink_remaining_ul:.4f} µL')
-    st.caption(f'Tempo: {s.t:.2f} s · tinta liberada: {s.ink_released_ul:.4f} µL · reservatório: {100*s.ink_remaining_ul/max(s.p.ink_volume_ul,1e-15):.1f}%')
-    st.caption(f'Re = {re:.2g} (validade Stokes: Re ≪ 1) · Pe = {pe:.2g} · massa superficial = {np.sum(s.G)*s.dx**2*1e9:.3f} ng')
-    left,right=st.columns([1.35,1.0],gap='large')
+    clock = st.session_state.inkboat_clock
+    clock.advance(time.monotonic(), p.duration_s, playback_rate)
+    elapsed = clock.elapsed_s
+    if elapsed > 0:
+        count = max(2, int((p.points-1)*elapsed/p.duration_s)+1)
+        r = simulate(replace(p, duration_s=elapsed, points=count))
+    else:
+        r = {key: values[:1] for key, values in simulate(p).items()}
+    status = "Em execução" if clock.running else ("Concluída" if elapsed >= p.duration_s else ("Pausada" if elapsed > 0 else "Pronta"))
+    st.markdown(f"**{status}** · Tempo simulado: **{elapsed:.2f} / {p.duration_s:.2f} s**")
+    st.progress(min(1.0, elapsed/p.duration_s))
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Velocidade atual U", f"{r['velocity_m_s'][-1]*1e3:.4f} mm/s")
+    m2.metric("Aceleração atual", f"{r['acceleration_m_s2'][-1]*1e3:.4f} mm/s²")
+    m3.metric("Força capilar resultante", f"{r['capillary_force_n'][-1]*1e6:.4f} µN")
+    m4.metric("Tempo de relaxação τ", f"{p.relaxation_time_s:.3g} s")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Contraste atual Δγ", f"{r['contrast_n_m'][-1]*1e3:.5f} mN/m")
+    c2.metric("Tinta restante", f"{r['ink_remaining_m3'][-1]*1e9:.4f} µL")
+    c3.metric("Tinta ejetada", f"{r['ink_ejected_m3'][-1]*1e9:.4f} µL")
+    if np.isfinite(p.empty_time_s):
+        st.caption(f"Esgotamento previsto: {p.empty_time_s:.3g} s · "
+                   + ("Reservatório vazio; movimento residual por inércia." if elapsed >= p.empty_time_s else "Reservatório em consumo."))
+    st.caption(f"Disco: R={p.radius_m*1e3:.3f} mm · P={perimeter_mm:.2f} mm · "
+               f"área inferior molhada={p.wetted_area_m2*1e6:.3f} mm² · b={p.drag_kg_s:.4g} kg/s")
+
+
+    def curve(key, label, color):
+        fig, ax = plt.subplots(figsize=(6.4, 4.0), constrained_layout=True)
+        ax.plot(r["time_s"], r[key]*1e3, color=color, lw=2.3, marker="o" if len(r["time_s"]) == 1 else None)
+        ax.axhline(0, color="#808080", lw=0.6)
+        ax.set(xlabel="Tempo (s)", ylabel=label, xlim=(0, p.duration_s))
+        if 0 < p.empty_time_s <= p.duration_s:
+            ax.axvline(p.empty_time_s, color="gray", linestyle=":", lw=1, label="Fim da tinta")
+        ax.grid(alpha=0.22)
+        st.pyplot(fig, width="stretch")
+        plt.close(fig)
+
+    left, right = st.columns(2, gap="large")
     with left:
-        st.subheader('Resposta propulsiva')
-        fig,ax=plt.subplots(figsize=(7,4.5))
-        if s.history:
-            h=np.asarray(s.history)
-            ax.plot(h[:,0],np.hypot(h[:,3],h[:,4])*1e3,label='Velocidade |U| (mm/s)',lw=2)
-            ax.set(xlabel='Tempo (s)',ylabel='Velocidade (mm/s)')
-            ax.grid(alpha=.25)
-        st.pyplot(fig,use_container_width=True);plt.close(fig)
-        fig,ax=plt.subplots(figsize=(7,3.5))
-        if s.history:
-            h=np.asarray(s.history)
-            ax.plot(h[:,0],np.hypot(h[:,5],h[:,6])*1e6,label='|F|',color='tab:orange',lw=2)
-            ax.set(xlabel='Tempo (s)',ylabel='Força capilar (µN)')
-            ax.grid(alpha=.25)
-        st.pyplot(fig,use_container_width=True);plt.close(fig)
-        fig,ax=plt.subplots(figsize=(7,2.8))
-        if s.history:
-            h=np.asarray(s.history)
-            ax.plot(h[:,0],h[:,8],lw=2,color='tab:green')
-            ax.set(xlabel='Tempo (s)',ylabel='Tinta restante (µL)',ylim=(0,max(s.p.ink_volume_ul*1.05,1e-6)))
-            ax.grid(alpha=.25)
-        st.pyplot(fig,use_container_width=True);plt.close(fig)
+        st.subheader("Velocidade do barco")
+        curve("velocity_m_s", "Velocidade Uₓ (mm/s)", "#286080")
     with right:
-        st.subheader('Mecanismo: tensão superficial')
-        gamma=s.p.gamma_wa_mnm-s.p.beta_n_m_per_kg_m2*s.G*1e3
-        fig,ax=plt.subplots(figsize=(5,4.2))
-        extent=[-s.p.domain_mm/2,s.p.domain_mm/2]*2
-        # Escala fixa: referência γ_wa e amplitude indicada pelo usuário.
-        span=max(s.p.beta_n_m_per_kg_m2*1e-6*1e3,0.1)
-        im=ax.imshow(gamma,extent=extent,origin='lower',cmap='viridis',
-                     vmin=s.p.gamma_wa_mnm-10*span,vmax=s.p.gamma_wa_mnm)
-        from matplotlib.patches import Circle
-        ax.add_patch(Circle((s.pos[0]*1e3,s.pos[1]*1e3),s.p.radius_mm,
-                            fill=False,color='white',lw=2))
-        ax.set(xlabel='x (mm)',ylabel='y (mm)',title='γ água–ar efetiva (mN/m)',aspect='equal')
-        fig.colorbar(im,ax=ax,label='mN/m')
-        st.pyplot(fig,use_container_width=True);plt.close(fig)
-        st.caption('O campo de γ é calculado a partir de Γ. A posição e a largura da fonte ainda são entradas efetivas do modelo.')
-        fig,ax=plt.subplots(figsize=(5,3.5))
-        if s.history:
-            h=np.asarray(s.history)
-            ax.plot(h[:,1]*1e3,h[:,2]*1e3,lw=2)
-            ax.plot(h[-1,1]*1e3,h[-1,2]*1e3,'o',ms=6)
-        ax.set(xlabel='x (mm)',ylabel='y (mm)',title='Trajetória do barco',aspect='equal')
-        ax.grid(alpha=.25)
-        st.pyplot(fig,use_container_width=True);plt.close(fig)
+        st.subheader("Aceleração do barco")
+        curve("acceleration_m_s2", "Aceleração aₓ (mm/s²)", "#c06c2b")
+
+    left, right = st.columns(2, gap="large")
+    with left:
+        st.subheader("Tinta e contraste no tempo")
+        fig, ax = plt.subplots(figsize=(6.4, 3.2), constrained_layout=True)
+        fraction = r["ink_remaining_m3"]/p.ink_volume_m3 if p.ink_volume_m3 > 0 else np.zeros_like(r["time_s"])
+        ax.plot(r["time_s"], fraction*100, color="#4b8b53", lw=2)
+        contrast_fraction = r["contrast_n_m"]/p.gamma_contrast_n_m if p.gamma_contrast_n_m != 0 else np.zeros_like(r["time_s"])
+        ax.plot(r["time_s"], contrast_fraction*100, color="#c06c2b", lw=2, label="Contraste Δγ/Δγ₀")
+        ax.lines[0].set_label("Volume V/V₀")
+        ax.legend(fontsize=9)
+        ax.set(xlabel="Tempo (s)", ylabel="Fração inicial (%)", xlim=(0, p.duration_s), ylim=(-2, 105))
+        if 0 < p.empty_time_s <= p.duration_s:
+            ax.axvline(p.empty_time_s, color="gray", linestyle=":", lw=1)
+        ax.grid(alpha=0.22)
+        st.pyplot(fig, width="stretch")
+        plt.close(fig)
+        st.subheader("Forças horizontais")
+        fig, ax = plt.subplots(figsize=(6.4, 4.0), constrained_layout=True)
+        for key, label, style in [
+            ("capillary_force_n", "Tensão superficial Fγ", "-"),
+            ("hydrodynamic_force_n", "Viscosa Fh", "--"),
+            ("total_force_n", "Resultante = m a", "-."),
+        ]:
+            ax.plot(r["time_s"], r[key]*1e6, style, label=label, lw=2)
+        ax.set(xlabel="Tempo (s)", ylabel="Força em x (µN)", xlim=(0, p.duration_s))
+        if 0 < p.empty_time_s <= p.duration_s:
+            ax.axvline(p.empty_time_s, color="gray", linestyle=":", lw=1, label="Fim da tinta")
+        ax.grid(alpha=0.22)
+        ax.legend(fontsize=9)
+        st.pyplot(fig, width="stretch")
+        plt.close(fig)
+    with right:
+        st.subheader("Contorno: contraste de tensão superficial")
+        theta, xy, normals = contact_line(p)
+        fig, ax = plt.subplots(figsize=(6.4, 4.0), constrained_layout=True)
+        closed = np.vstack((xy, xy[0]))*1e3
+        ax.fill(closed[:, 0], closed[:, 1], color="#d9e6ec", alpha=0.8)
+        ax.plot(closed[:, 0], closed[:, 1], color="#286080", lw=2)
+        ids = np.arange(0, len(theta), 16)
+        if p.gamma_n_m > 0:
+            gamma = gamma_on_contour(theta, elapsed, p)
+            arrows = normals[ids]*(gamma[ids]/gamma.max())[:, None]*p.radius_m*0.3*1e3
+            ax.quiver(xy[ids, 0]*1e3, xy[ids, 1]*1e3, arrows[:, 0], arrows[:, 1],
+                      angles="xy", scale_units="xy", scale=1, color="#c06c2b", width=0.007)
+        extent = p.radius_m*1e3*1.6
+        ax.set(xlabel="x (mm)", ylabel="y (mm)", aspect="equal",
+               xlim=(-extent, extent), ylim=(-extent, extent))
+        ax.grid(alpha=0.15)
+        st.pyplot(fig, width="stretch")
+        plt.close(fig)
+        st.caption("Setas indicam a direção local da tração capilar; a escala é ilustrativa. "
+                   "A intensidade relativa das setas acompanha γ. A componente uniforme se cancela; o contraste gera a resultante em x.")
+
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(r.keys())
+    writer.writerows(zip(*r.values()))
+    st.download_button("Baixar curvas até o instante atual (CSV, SI)", data=buffer.getvalue(),
+                       file_name="inkboat_force_balance.csv", mime="text/csv")
 
 live()
+
+with st.expander("Hipóteses, dados que faltam e próximos passos"):
+    st.markdown(r"""
+- **Geometria:** disco fino, linha de contato circular plana, área molhada inferior $A_w = \pi R^2$; sem rotação ou variação de imersão.
+- **Fechamento viscoso:** perfil linear em uma camada h, pressão sem gradiente horizontal e arrasto $b = \mu A_w/h$. É uma aproximação escolhida, não a integração de um escoamento resolvido.
+- **Condição inicial:** barco e água em repouso. O efeito da tinta é representado apenas por Δγ prescrito; há consumo de um reservatório finito, mas sem transporte de concentração.
+- **Para o barco real:** faltam formato, massa e imersão medidos, condições nas paredes/fundo, temperatura e uma lei espacial/temporal de γ vinculada à concentração de tinta. Para avaliar a Eq. 3.3 completa, precisamos resolver p e u com essas condições.
+- **Próxima etapa:** substituir γ₀ por γ(θ,t). O contraste é constante enquanto houver tinta e cai abruptamente a zero no esgotamento. Um gradiente real também pode gerar escoamento de Marangoni na água; esse efeito não é resolvido pelo fechamento de arrasto e exigirá uma revisão na próxima etapa.
+""")
+    re_max = float(simulate(p)["reynolds"].max())
+    diffusion_time = WATER_DENSITY_KG_M3*p.shear_depth_m**2/WATER_VISCOSITY_PA_S
+    st.write(f"Diagnósticos da janela completa: Re máximo (diâmetro) = {re_max:.3g}; "
+             f"h/R = {p.shear_depth_m/p.radius_m:.3g}; "
+             f"tempo de difusão viscosa h²/ν ≈ {diffusion_time:.3g} s.")
+    st.caption("Camada fina, efeitos de borda pequenos e difusão viscosa rápida em relação à resposta "
+               "do barco favorecem esse fechamento. Não foram incluídos inércia do fluido, massa adicionada ou memória hidrodinâmica.")
+    st.markdown("Tese: Saeed Jafari Kang (2021), *Marangoni Propulsion of Active Particles*, "
+                "§3.2, Eqs. (3.3) e (3.5), pp. 26–27. PDF preservado nesta pasta.")
+

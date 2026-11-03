@@ -2,7 +2,7 @@ import unittest
 from dataclasses import replace
 import numpy as np
 from model import (Params, WATER_VISCOSITY_PA_S, capillary_force,
-                   constant_force_response, contact_line, simulate, ink_fraction, finite_ink_response)
+                   constant_force_response, contact_line, simulate, ink_fraction, finite_ink_response, ink_active)
 
 
 class ForceBalanceTests(unittest.TestCase):
@@ -82,7 +82,7 @@ class ForceBalanceTests(unittest.TestCase):
         p = Params()
         time = np.array([0, p.empty_time_s/2, p.empty_time_s, 2*p.empty_time_s])
         np.testing.assert_allclose(ink_fraction(time, p), [1, 0.5, 0, 0])
-        for t, fraction in zip(time, [1, 0.5, 0, 0]):
+        for t, fraction in zip(time, [1, 1, 0, 0]):
             np.testing.assert_allclose(capillary_force(p, time_s=t),
                                        [p.perimeter_m*p.gamma_contrast_n_m*fraction/4, 0], atol=1e-18)
         r = simulate(replace(p, duration_s=10))
@@ -111,7 +111,7 @@ class ForceBalanceTests(unittest.TestCase):
         time = np.array([T-1e-8, T, T+1e-8, T+tau])
         v, a, x = finite_ink_response(time, p)
         np.testing.assert_allclose(v[:3], v[1], rtol=1e-7)
-        np.testing.assert_allclose(a[:3], a[1], rtol=1e-7)
+        self.assertAlmostEqual(a[1]-a[0], -p.perimeter_m*p.gamma_contrast_n_m/(4*p.mass_kg), places=9)
         np.testing.assert_allclose(x[:3], x[1], rtol=1e-7)
         self.assertGreater(v[1], 0)
         self.assertLess(a[1], 0)
@@ -122,23 +122,24 @@ class ForceBalanceTests(unittest.TestCase):
         np.testing.assert_allclose(na, -a)
         np.testing.assert_allclose(nx, -x)
 
-    def test_ramp_solution_matches_independent_rk4_integration(self):
+    def test_cutoff_solution_matches_independent_rk4_integration(self):
         p = Params()
         total = 2*p.empty_time_s
         steps = 4000
         dt = total/steps
         state = np.zeros(2)  # velocity and displacement
         force0 = p.perimeter_m*p.gamma_contrast_n_m/4
-        def rhs(t, y):
-            force = force0*max(1-t/p.empty_time_s, 0)
+        # Integrate separate constant-force intervals so RK4 never straddles
+        # the discontinuity or averages the two one-sided accelerations.
+        def rhs(y, force):
             return np.array([(force-p.drag_kg_s*y[0])/p.mass_kg, y[0]])
-        for k in range(steps):
-            t = k*dt
-            k1 = rhs(t, state)
-            k2 = rhs(t+dt/2, state+dt*k1/2)
-            k3 = rhs(t+dt/2, state+dt*k2/2)
-            k4 = rhs(t+dt, state+dt*k3)
-            state += dt*(k1+2*k2+2*k3+k4)/6
+        for force in (force0, 0):
+            for k in range(steps//2):
+                k1 = rhs(state, force)
+                k2 = rhs(state+dt*k1/2, force)
+                k3 = rhs(state+dt*k2/2, force)
+                k4 = rhs(state+dt*k3, force)
+                state += dt*(k1+2*k2+2*k3+k4)/6
         v, a, x = finite_ink_response(np.array([total]), p)
         np.testing.assert_allclose([v[0], x[0]], state, rtol=1e-10, atol=1e-16)
 
