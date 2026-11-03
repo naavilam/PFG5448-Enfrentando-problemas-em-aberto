@@ -1,4 +1,20 @@
 """Run with: python -m streamlit run app.py"""
+import sys
+import streamlit as st
+
+print(f"INKBOAT_BOOT streamlit={st.__version__} python={sys.version.split()[0]}", flush=True)
+# A lightweight route to isolate Cloud/frontend failures from the model and plots.
+if st.query_params.get("diagnostic") == "1":
+    st.set_page_config(page_title="Ink Boat | Diagnóstico", layout="centered")
+    st.title("Ink Boat — diagnóstico de conexão")
+    st.success("A sessão do navegador conectou e executou o Python.")
+    st.write(f"Streamlit {st.__version__} · Python {sys.version.split()[0]}")
+    if st.button("Testar comunicação com o servidor"):
+        st.session_state.probe_count = st.session_state.get("probe_count", 0) + 1
+    st.write("Respostas do servidor:", st.session_state.get("probe_count", 0))
+    print("INKBOAT_DIAGNOSTIC_READY", flush=True)
+    st.stop()
+
 import csv
 import io
 import time
@@ -7,7 +23,6 @@ from playback import Playback
 
 import matplotlib.pyplot as plt
 import numpy as np
-import streamlit as st
 
 from model import (
     Params, WATER_DENSITY_KG_M3, WATER_PRESSURE_PA, WATER_SOURCE,
