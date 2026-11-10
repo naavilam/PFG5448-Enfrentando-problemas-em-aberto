@@ -272,5 +272,5 @@ $\gamma_0$ uniforme integra a zero.
 
 **Limites:** apenas surge (sem guinada nem arfagem); superfície não deforma; a tinta é um escalar de volume, não
 um surfactante só de superfície com adsorção; γ(c) linear; o cisalhamento no casco omite a parte normal do
-tensor viscoso (diferença de ~2% em relação ao `forces` do OpenFOAM). Os valores são ilustrativos.
+tensor viscoso (diferença de ~2% em relação ao `forces` do OpenFOAM). Os valores precisam ser ajustados conforme o experimento.
 """)
