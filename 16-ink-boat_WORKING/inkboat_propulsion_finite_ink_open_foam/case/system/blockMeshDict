@@ -1,0 +1,34 @@
+/*--------------------------------*- C++ -*----------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+
+// Window of 16 x 8 x 2 cm that travels WITH the boat (boat frame).
+// The boat sits 6 cm behind the inlet so the wake has 8.5 cm to develop.
+// Free surface at z = 0, bottom of the tank at z = -2 cm.
+scale 1;
+
+vertices
+(
+    (-0.10 -0.04 -0.02) ( 0.06 -0.04 -0.02) ( 0.06 0.04 -0.02) (-0.10 0.04 -0.02)
+    (-0.10 -0.04  0.00) ( 0.06 -0.04  0.00) ( 0.06 0.04  0.00) (-0.10 0.04  0.00)
+);
+
+blocks
+(
+    hex (0 1 2 3 4 5 6 7) (128 64 24) simpleGrading (1 1 0.15)
+);
+
+boundary
+(
+    surface { type patch; faces ((4 5 6 7)); }
+    inlet   { type patch; faces ((1 2 6 5)); }     // bow side, x = +6 cm
+    outlet  { type patch; faces ((0 4 7 3)); }     // stern side, x = -10 cm
+    sides   { type patch; faces ((0 1 5 4) (3 7 6 2)); }
+    bottom  { type wall;  faces ((0 3 2 1)); }
+    boat    { type wall;  faces (); }
+);

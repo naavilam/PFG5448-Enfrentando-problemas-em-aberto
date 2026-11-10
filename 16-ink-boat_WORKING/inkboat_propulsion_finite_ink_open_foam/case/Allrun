@@ -1,0 +1,16 @@
+#!/bin/sh
+# Run inside the OpenFOAM environment:  openfoam ./Allrun   (or source the env first)
+cd "${0%/*}" || exit 1
+set -e
+NP=${NP:-8}
+blockMesh                                 > log.blockMesh
+topoSet                                   > log.topoSet
+subsetMesh fluid -patch boat -overwrite   > log.subsetMesh
+rm -rf constant/polyMesh/sets/boat constant/polyMesh/sets/fluid
+topoSet -dict system/topoSetDict.ink      > log.topoSet.ink
+checkMesh                                 > log.checkMesh
+decomposePar -force                       > log.decomposePar
+mpirun -np "$NP" pimpleFoam -parallel     > log.pimpleFoam 2>&1
+reconstructPar                            > log.reconstructPar
+postProcess -func writeCellCentres -time 0 > log.cellCentres
+echo done

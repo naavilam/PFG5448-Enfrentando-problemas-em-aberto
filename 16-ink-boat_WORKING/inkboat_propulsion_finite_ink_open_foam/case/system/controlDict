@@ -1,0 +1,185 @@
+/*--------------------------------*- C++ -*----------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      controlDict;
+}
+
+application     pimpleFoam;
+startFrom       startTime;
+startTime       0;
+stopAt          endTime;
+endTime         8;
+deltaT          1e-3;
+writeControl    adjustable;
+writeInterval   0.2;
+purgeWrite      0;
+writeFormat     ascii;
+writePrecision  7;
+writeCompression off;
+timeFormat      general;
+timePrecision   6;
+runTimeModifiable false;
+adjustTimeStep  yes;
+maxCo           0.7;
+maxDeltaT       0.01;
+
+functions
+{
+    // Ink (surfactant) concentration, 0..1. Finite ink: source active for 3 s.
+    // The source is fixed to the boat (boat frame), just behind the stern.
+    ink
+    {
+        type            scalarTransport;
+        libs            (solverFunctionObjects);
+        field           c;
+        D               2e-6;      // effective diffusivity [m2/s] (numerical, > molecular)
+        bounded01       true;
+        writeControl    writeTime;
+        fvOptions
+        {
+            inkRelease
+            {
+                type            scalarSemiImplicitSource;
+                timeStart       0;
+                duration        3;
+                selectionMode   cellSet;
+                cellSet         inkSource;
+                volumeMode      specific;
+                sources
+                {
+                    c           (40 -40);   // relax c -> 1 at rate 40 1/s
+                }
+            }
+        }
+    }
+
+    // Free boat, surge only:  m dU/dt = F_cl + F_pressure + F_viscous
+    //   F_cl = oint gamma t dl = -Gamma oint c t dl   (contact line, gamma0 cancels)
+    //   t    = horizontal unit normal pointing from the hull into the water
+    // Solved in the boat frame: inlet and tank bottom move at -U; the frame
+    // acceleration a = dU/dt enters the water as the body force -a (constant/fvOptions).
+    boatMotion
+    {
+        type            coded;
+        libs            (utilityFunctionObjects);
+        name            boatMotion;
+
+        codeInclude
+        #{
+            #include "OFstream.H"
+            #include "uniformDimensionedFields.H"
+        #};
+
+        codeData
+        #{
+            scalar Ub_ = 0;
+            scalar Xb_ = 0;
+            autoPtr<OFstream> os_;
+        #};
+
+        codeExecute
+        #{
+            const fvMesh& m = mesh();
+            const Time& rt = m.time();
+            const scalar dt = rt.deltaTValue();
+
+            const scalar rho   = 998.2;      // water [kg/m3]
+            const scalar nu    = 1.0e-6;     // [m2/s]
+            const scalar Gamma = 1.0e-3;     // -dgamma/dc [N/m]
+            const scalar mass  = 1.347e-3;   // floating boat = displaced water, 30x15x3 mm [kg]
+
+            const volScalarField& p = m.lookupObject<volScalarField>("p");
+            volVectorField& U = m.lookupObjectRef<volVectorField>("U");
+
+            const label boatI = m.boundaryMesh().findPatchID("boat");
+            const label surfI = m.boundaryMesh().findPatchID("surface");
+            const fvPatch& bp = m.boundary()[boatI];
+            const vectorField& Sf = bp.Sf();
+            const scalarField magSf(bp.magSf());
+
+            // hydrodynamic force on the hull (Sf points from the water into the hull)
+            const vector Fp = gSum(rho*p.boundaryField()[boatI]*Sf);
+            const vectorField snGradU(U.boundaryField()[boatI].snGrad());
+            const vector Fv = gSum(-rho*nu*snGradU*magSf);
+
+            // contact-line force from the ink concentration in the waterline cells
+            vector Fcl(Zero);
+            if (m.foundObject<volScalarField>("c"))
+            {
+                const volScalarField& c = m.lookupObject<volScalarField>("c");
+                const labelUList& topCells = m.boundary()[surfI].faceCells();
+                boolList isTop(m.nCells(), false);
+                forAll(topCells, i) { isTop[topCells[i]] = true; }
+
+                const labelUList& hullCells = bp.faceCells();
+                const vectorField& C = m.C();
+                forAll(hullCells, i)
+                {
+                    const label ci = hullCells[i];
+                    if (!isTop[ci]) continue;
+                    vector t = -Sf[i]/magSf[i];
+                    if (mag(t.z()) > 0.5) continue;           // only vertical hull faces
+                    t.z() = 0; t /= mag(t);
+                    const scalar dz = -2.0*C[ci].z();          // top-layer cell height
+                    const scalar dl = magSf[i]/dz;             // waterline length of the face
+                    Fcl += -Gamma*c[ci]*t*dl;
+                }
+                reduce(Fcl, sumOp<vector>());
+            }
+
+            const scalar F = Fcl.x() + Fp.x() + Fv.x();
+            const scalar a = F/mass;
+            Ub_ += a*dt;
+            Xb_ += Ub_*dt;
+
+            // boat frame: undisturbed water and tank bottom move at -U
+            const vector Uwater(-Ub_, 0, 0);
+            U.boundaryFieldRef()[m.boundaryMesh().findPatchID("inlet")]  == Uwater;
+            U.boundaryFieldRef()[m.boundaryMesh().findPatchID("bottom")] == Uwater;
+
+            // frame acceleration for the fictitious body force in constant/fvOptions
+            if (!m.foundObject<uniformDimensionedVectorField>("boatAccel"))
+            {
+                auto* ptr = new uniformDimensionedVectorField
+                (
+                    IOobject("boatAccel", rt.constant(), m,
+                             IOobject::NO_READ, IOobject::NO_WRITE, IOobject::REGISTER),
+                    dimensionedVector(dimAcceleration, Zero)
+                );
+                ptr->store();
+            }
+            m.lookupObjectRef<uniformDimensionedVectorField>("boatAccel").value() = vector(a, 0, 0);
+
+            if (Pstream::master())
+            {
+                if (!os_)
+                {
+                    mkDir(rt.globalPath()/"postProcessing");
+                    os_.reset(new OFstream(rt.globalPath()/"postProcessing"/"boatMotion.dat"));
+                    os_() << "# t X_boat U_boat a_boat F_contactLine F_pressure F_viscous" << nl;
+                }
+                os_() << rt.value() << ' ' << Xb_ << ' ' << Ub_ << ' ' << a << ' '
+                      << Fcl.x() << ' ' << Fp.x() << ' ' << Fv.x() << nl;
+                os_().flush();
+            }
+            Info<< "boatMotion: X = " << Xb_ << "  U = " << Ub_
+                << "  F = " << F << " (cl " << Fcl.x() << ", p " << Fp.x()
+                << ", v " << Fv.x() << ")" << endl;
+        #};
+    }
+
+    boatForces
+    {
+        type            forces;
+        libs            (forces);
+        patches         (boat);
+        rho             rhoInf;
+        rhoInf          998.2;
+        CofR            (0 0 0);
+        writeControl    timeStep;
+        writeInterval   1;
+    }
+}

@@ -1,0 +1,68 @@
+/*--------------------------------*- C++ -*----------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvOptions;
+}
+
+// (1) Fictitious force of the accelerating boat frame, (2) Marangoni stress at the flat free surface.
+// gamma = gamma0 - Gamma*c  ->  tau_s = grad_s(gamma) = -Gamma grad_s(c)
+// Applied as a body force in the first cell layer below the surface:
+//   f = tau_s / (rho * dz)   (kinematic, m/s2), with a slip top boundary.
+marangoni
+{
+    type            vectorCodedSource;
+    selectionMode   all;
+    fields          (U);
+    name            marangoniStress;
+
+    codeInclude
+    #{
+        #include "fvcGrad.H"
+        #include "uniformDimensionedFields.H"
+    #};
+
+    codeAddSup
+    #{
+        // Boat frame accelerating with a = dU/dt (set by the boatMotion function
+        // object): fictitious body force -a on all the water.
+        if (mesh_.foundObject<uniformDimensionedVectorField>("boatAccel"))
+        {
+            const vector a =
+                mesh_.lookupObject<uniformDimensionedVectorField>("boatAccel").value();
+            eqn.source() += a*mesh_.V().field();          // adds -a to the RHS
+        }
+
+        if (!mesh_.foundObject<volScalarField>("c")) return;
+        const volScalarField& c = mesh_.lookupObject<volScalarField>("c");
+
+        const scalar Gamma = 1.0e-3;   // -dgamma/dc [N/m]
+        const scalar rho   = 998.2;    // [kg/m3]
+
+        const label patchi = mesh_.boundaryMesh().findPatchID("surface");
+        const fvPatch& pp = mesh_.boundary()[patchi];
+        const labelUList& fc = pp.faceCells();
+        const vectorField nf(pp.nf());
+        const vectorField& Cf = pp.Cf();
+        const vectorField& C  = mesh_.C();
+        const scalarField& V  = mesh_.V();
+
+        const volVectorField gradC(fvc::grad(c));
+        vectorField& Su = eqn.source();
+
+        forAll(fc, i)
+        {
+            const label celli = fc[i];
+            vector g = gradC[celli];
+            g -= (g & nf[i])*nf[i];                       // tangential part
+            const scalar dz = 2.0*mag((Cf[i] - C[celli]) & nf[i]);
+            const vector f = -Gamma/rho*g/dz;
+            Su[celli] -= f*V[celli];                      // adds +f to the RHS
+        }
+    #};
+
+    codeCorrect   #{ #};
+    codeConstrain #{ #};
+}
